@@ -15,7 +15,7 @@ React 클라이언트와는 REST API로 통신하고, AI 모델 서버와는 gRP
 | 담당 | FastAPI API, PostgreSQL 스키마, REST-gRPC 변환, 상태 및 오류 처리, 통합 테스트 |
 | 전체 구성 | React REST ↔ FastAPI ↔ AI Model gRPC |
 
-팀 전체 코드와 배포 구성은 [SnapshotMain](https://github.com/DevTeam-Snapshot/SnapshotMain)에서 확인할 수 있습니다.
+팀 전체 코드와 배포 구성은 [SnapshotMain](https://github.com/tjgh8167/snapshot-ai-ad-service)에서 확인할 수 있습니다.
 
 ## 문제 정의
 
@@ -159,7 +159,7 @@ docker compose up --build -d
 - Backend health: `http://127.0.0.1:9000/health`
 - Model health: `http://127.0.0.1:9000/api/model/health`
 
-이 저장소의 Compose는 백엔드와 PostgreSQL을 실행합니다. Frontend 및 AI Model을 포함한 전체 실행은 [SnapshotMain](https://github.com/DevTeam-Snapshot/SnapshotMain)의 Compose 구성을 사용합니다.
+이 저장소의 Compose는 백엔드와 PostgreSQL을 실행합니다. Frontend 및 AI Model을 포함한 전체 실행은 [SnapshotMain](https://github.com/tjgh8167/snapshot-ai-ad-service)의 Compose 구성을 사용합니다.
 
 ## 한계와 개선 방향
 
@@ -176,6 +176,6 @@ docker compose up --build -d
 
 ## 관련 자료
 
-- [팀 통합 저장소](https://github.com/DevTeam-Snapshot/SnapshotMain)
+- [팀 통합 저장소](https://github.com/tjgh8167/snapshot-ai-ad-service)
 - [백엔드 API 명세](document/api-spec.html)
 - [백엔드 기여 기록](document/contribution.md)
