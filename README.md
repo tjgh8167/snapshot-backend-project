@@ -1,221 +1,181 @@
-# FastAPI Backend
+# Snapshot Backend
 
-- 담당자: AI 11기 2팀 Snapshot 정서호
-- 숙박업 소상공인을 위한 생성형 AI 광고 제작 서비스의 백엔드 저장소입니다.
-- React와 REST API로 통신하고, 모델 서버와 gRPC로 통신합니다.
-- 광고 기획 세션, 원본 이미지, 광고 초안, 처리 상태와 이미지 URL을 관리합니다.
+숙박업 소상공인이 대화를 통해 광고 기획서를 만들고, 객실·분위기·혜택을 강조한 광고 이미지 3종을 생성하는 서비스의 FastAPI 백엔드입니다.
 
-## 1. 주요 기능
+React 클라이언트와는 REST API로 통신하고, AI 모델 서버와는 gRPC로 통신합니다. 기획 단계와 입력 데이터, 이미지 생성 상태를 PostgreSQL에 저장하며 모델 오류와 사용자 재생성을 구분해 처리합니다.
 
-V2에서는 다음 흐름을 구현했습니다.
+## 프로젝트 개요
+
+| 구분 | 내용 |
+| --- | --- |
+| 기간 | 2026.09.03 - 2026.10.02 |
+| 인원 | 3명 (Frontend, Backend, AI Model) |
+| 대상 사용자 | 광고 제작 인력이 부족한 숙박업 소상공인 |
+| 핵심 기능 | 대화형 광고 기획, 원본 이미지 업로드, 광고 초안 3종 생성, 선택·재생성·다운로드 |
+| 담당 | FastAPI API, PostgreSQL 스키마, REST-gRPC 변환, 상태 및 오류 처리, 통합 테스트 |
+| 전체 구성 | React REST ↔ FastAPI ↔ AI Model gRPC |
+
+팀 전체 코드와 배포 구성은 [SnapshotMain](https://github.com/DevTeam-Snapshot/SnapshotMain)에서 확인할 수 있습니다.
+
+## 문제 정의
+
+소규모 숙박업체가 광고 콘텐츠를 만들려면 숙소의 특징과 혜택을 정리하고, 목적에 맞는 문구와 이미지를 반복해서 제작해야 합니다. Snapshot은 사용자가 챗봇의 질문에 답하면 광고 기획 정보를 구조화하고, 서로 다른 강조점을 가진 광고 초안을 한 번에 비교할 수 있도록 설계했습니다.
+
+백엔드는 단순히 요청을 중계하는 데서 끝나지 않고 다음 조건을 만족해야 했습니다.
+
+- 기획 대화의 단계와 저장 데이터가 어긋나지 않아야 합니다.
+- 각 광고 방향에 필요한 정보가 명확히 구분되어야 합니다.
+- REST 요청과 gRPC 응답 사이의 식별자와 상태를 검증해야 합니다.
+- 시스템 오류 재시도와 사용자의 재생성 기회를 분리해야 합니다.
+- 생성 이미지는 규격과 형식을 확인한 뒤 안전한 경로에 저장해야 합니다.
+
+## 서비스 흐름
 
 ```text
-React
-  → 광고 기획 세션 생성
-  → 모델과 대화하며 광고 기획서 작성
+기획 세션 생성
+  → 챗봇 질문에 답하며 숙소 정보 입력
   → 원본 이미지 업로드
-  → 완성된 기획서 확정
-  → A·B·C 광고 초안 생성
+  → 광고 기획서 확정
+  → 객실·분위기·혜택 광고 초안 생성
   → 초안 선택 또는 1회 재생성
-  → 완성된 광고 이미지 다운로드
+  → PNG 다운로드
 ```
 
-광고 기획 질문은 다음 순서로 진행합니다.
+광고 기획 단계는 `lodging_type → lodging_information → selling_points → lodging_service → mood → color_preference → target_audience → ad_copy → complete` 순서로 진행됩니다.
 
-```text
-lodging_type
-→ lodging_information
-→ selling_points
-→ lodging_service
-→ mood
-→ color_preference
-→ target_audience
-→ ad_copy
-→ complete
-```
+## 담당 역할
 
-광고 초안은 세 가지 방향으로 생성합니다.
+- FastAPI 기반 REST API와 서비스 계층 설계 및 구현
+- PostgreSQL 테이블과 Alembic 마이그레이션 관리
+- React 요청을 모델 서버의 gRPC 계약으로 변환하는 클라이언트 구현
+- 기획 단계 전환, 요청 식별자, 상태 버전 검증 로직 구현
+- 원본 및 결과 이미지 검증·저장·다운로드 처리
+- 실패한 초안 재시도와 사용자 재생성 정책 분리
+- Frontend·AI Model 담당자와 V1/V2 통합 테스트 진행
 
-```text
-room    : selling_points를 활용한 객실·전망·공간 중심
-emotion : mood와 color_preference를 활용한 감성·분위기 중심
-benefit : lodging_service를 활용한 서비스·혜택 중심
-```
+세부 의사결정과 구현 범위는 [기여 기록](document/contribution.md)에 정리했습니다.
 
-초안 상태는 다음과 같이 관리합니다.
+## 핵심 구현
+
+### 1. 광고 방향별 입력 정보 분리
+
+초기에는 하나의 숙소 장점 정보만으로 광고 3종을 생성했습니다. 입력이 짧으면 세 결과가 비슷하고 실제 숙소와 다른 표현이 만들어질 가능성이 있었습니다.
+
+광고 방향별로 참고할 필드를 분리하고, 혜택과 서비스를 묻는 `lodging_service` 단계를 새로 추가했습니다.
+
+| 광고 방향 | 사용하는 정보 | 목적 |
+| --- | --- | --- |
+| 객실·전망 | `selling_points` | 객실 내외부 특징과 공간 강조 |
+| 감성·분위기 | `mood`, `color_preference` | 원하는 분위기와 색상 반영 |
+| 서비스·혜택 | `lodging_service` | 조식, 이벤트, 부가 서비스 강조 |
+
+스키마, DB 마이그레이션, Protobuf 계약, REST-gRPC 변환 로직을 함께 수정해 입력부터 생성 요청까지 같은 의미가 유지되도록 했습니다.
+
+### 2. 기획 단계 일관성 검증
+
+화면의 진행 단계와 서버가 판단한 다음 단계가 어긋나면서 잘못된 `current_step`이 후속 요청에 저장되는 문제가 있었습니다.
+
+백엔드에서 현재 단계에 필요한 필드가 실제로 저장되었는지 확인하고, 현재 단계 유지 또는 정해진 다음 단계 이동만 허용했습니다. 잘못된 단계가 들어오면 즉시 오류를 반환해 연동 문제를 조기에 발견하도록 했습니다.
+
+정상 답변과 부적합 답변을 각각 입력해 단계 이동과 단계 유지가 모두 의도대로 동작하는지 확인했습니다.
+
+### 3. REST-gRPC 계약 검증
+
+모델 응답의 `request_id`, `session_id`, `state_revision`, `current_step`을 원래 요청과 대조합니다. 다른 세션의 응답이나 오래된 상태가 반환되면 처리하지 않아 데이터가 잘못 갱신되는 것을 막았습니다.
+
+gRPC 오류는 백엔드 내부 예외로 변환한 뒤 REST 상태 코드와 오류 메시지로 정리해 클라이언트가 실패 원인을 구분할 수 있도록 했습니다.
+
+### 4. 시스템 오류와 사용자 재생성 분리
+
+최초 생성 중 모델 또는 외부 서비스 오류가 발생하면 실패한 초안만 같은 `draft_id`로 다시 요청합니다. 이 재시도는 사용자의 1회 재생성 기회를 소모하지 않습니다.
+
+사용자가 결과 3종을 확인한 뒤 재생성을 선택한 경우에만 두 번째 생성 라운드를 시작하며, 세 초안이 모두 완료되었을 때 재생성 사용 여부를 확정합니다.
 
 ```text
 pending → processing → completed
-                     ↘ failed
+                     ↘ failed → system retry
+
+round 1 completed × 3 → user regeneration → round 2
 ```
 
-모델 또는 외부 서비스 오류로 최초 생성에 실패하면 실패한 1회차 초안만 같은 `draft_id`로 다시 시도합니다. 이 경우 사용자의 재생성 기회는 소모하지 않습니다.
+### 5. 이미지 검증과 저장
 
-## 2. Docker Compose 실행 방법
+- 원본 이미지: JPEG, PNG, WebP / 최대 25MiB
+- 생성 결과: PNG / 1080 × 1350
+- 세션·초안 ID를 기준으로 저장 경로 생성
+- DB에는 파일 자체가 아닌 URL과 메타데이터 저장
 
-이 저장소의 `compose.yaml`은 FastAPI와 PostgreSQL을 함께 실행합니다.
+## 검증 결과
 
-### 환경변수 파일 생성
+- 정상 답변 입력 시 다음 기획 단계로 이동
+- 필수 정보가 부족한 답변 입력 시 현재 단계 유지
+- 잘못된 단계와 식별자 입력 시 오류 반환
+- 객실·분위기·혜택별 입력 데이터가 각각의 생성 요청에 반영
+- 실패한 초안만 동일 ID로 재시도
+- 시스템 재시도가 사용자 재생성 횟수에 영향을 주지 않음
+- 생성된 PNG를 저장하고 React 화면에서 조회·다운로드
+- React → FastAPI → AI Model 전체 V1/V2 연동 테스트 완료
 
-```bash
-cp .env.example .env
-cp .postgres.env.example .postgres.env
-```
-
-실제 비밀번호와 API 키는 Git에 올리지 않습니다.
-
-### 실행
-
-```bash
-docker compose up --build -d
-```
-
-### 상태 및 로그 확인
-
-```bash
-docker compose ps
-docker compose logs -f backend
-```
-
-### 접속 주소
-
-```text
-Swagger UI: http://127.0.0.1:9000/docs
-백엔드 상태: http://127.0.0.1:9000/health
-모델 상태: http://127.0.0.1:9000/api/model/health
-```
-
-현재 Compose는 백엔드와 PostgreSQL만 실행합니다. 실제 모델 연동은 메인 저장소의 Compose에서 진행합니다.
-
-### 종료
-
-```bash
-docker compose down
-```
-
-PostgreSQL 데이터는 Docker Volume에 저장되어 유지됩니다.
-
-## 3. API
-
-현재 다음 기능을 제공합니다.
-
-- 광고 기획 세션 생성 및 조회
-- 원본 이미지 업로드
-- 사용자 답변 전달 및 다음 질문 요청
-- 완성된 광고 기획서 저장
-- A·B·C 광고 초안 생성 및 재생성
-- 최초 초안 생성 실패 재시도
-- 광고 초안 조회 및 최종 선택
-- 원본 이미지와 결과 이미지 조회
-- 완성된 광고 이미지 PNG 다운로드
-- 백엔드 및 모델 서버 상태 확인
-
-상세 URL, 필드 설명과 Request·Response Body는 [`document/api-spec.html`](document/api-spec.html) 및 팀 Notion의 백엔드 API 명세에서 관리합니다.
-
-## 4. 기술 스택
+## 기술 스택
 
 | 구분 | 기술 |
 | --- | --- |
 | Backend | Python 3.12, FastAPI, Uvicorn, Pydantic |
-| Database | PostgreSQL 17.11, SQLAlchemy, Alembic, Psycopg |
-| Image | Pillow |
+| Database | PostgreSQL, SQLAlchemy, Alembic, Psycopg |
 | Model communication | gRPC, Protobuf, grpcio-status |
-| Infrastructure | Docker, Docker Compose, Docker Hub, GCP VM |
+| Image | Pillow |
+| Infrastructure | Docker, Docker Compose, Nginx, GCP VM |
 
-## 5. 폴더 구조
+## 프로젝트 구조
 
 ```text
-FastAPI-Backend/
-├── alembic/
-│   └── versions/
+snapshot-backend-project/
+├── alembic/                 # DB 마이그레이션
 ├── app/
-│   ├── api/routes/
-│   │   ├── health.py
-│   │   ├── model_health.py
-│   │   ├── planning_sessions.py
-│   │   ├── planning_turns.py
-│   │   ├── advertisement_drafts.py
-│   │   ├── draft_downloads.py
-│   │   └── image_generations.py
-│   ├── clients/
-│   │   ├── planning_agent.py
-│   │   ├── draft_image.py
-│   │   ├── grpc_draft_image.py
-│   │   └── grpc_error.py
-│   ├── core/
-│   ├── db/
-│   ├── grpc_stubs/
-│   ├── models/
-│   ├── schemas/
-│   └── services/
+│   ├── api/routes/          # REST API
+│   ├── clients/             # AI Model gRPC 클라이언트
+│   ├── db/                  # DB 연결
+│   ├── grpc_stubs/          # Protobuf 및 생성 코드
+│   ├── models/              # SQLAlchemy 모델
+│   ├── schemas/             # 요청·응답 검증
+│   └── services/            # 비즈니스 로직
 ├── document/
 │   ├── api-spec.html
-│   └── v2-model-contract-update.txt
-├── Image/
+│   └── contribution.md
 ├── compose.yaml
 ├── Dockerfile
-├── requirements.txt
-└── README.md
+└── requirements.txt
 ```
 
-## 6. 주요 폴더별 역할
+## 실행 방법
 
-| 폴더 | 역할 |
-| --- | --- |
-| `app/api/routes/` | REST API 주소와 요청·응답 처리 |
-| `app/clients/` | 모델 서버 gRPC 통신과 오류 처리 |
-| `app/models/` | PostgreSQL 테이블 구조 정의 |
-| `app/schemas/` | API 요청과 응답 데이터 검증 |
-| `app/services/` | 기획 세션, 초안 생성 및 이미지 저장 로직 |
-| `app/grpc_stubs/` | proto와 자동 생성된 gRPC 코드 |
-| `alembic/` | 데이터베이스 구조 변경 이력 |
-| `document/` | 백엔드 API 명세와 모델 서버 연동 계약 문서 |
-| `Image/` | 원본 이미지와 생성 결과 저장 |
-
-## 7. 이미지 저장 구조
-
-```text
-Image/
-├── requests/
-│   └── {session_id}/original.{확장자}
-└── results/
-    └── {draft_id}/generated.png
+```bash
+cp .env.example .env
+cp .postgres.env.example .postgres.env
+docker compose up --build -d
 ```
 
-원본 이미지는 JPEG, PNG, WebP 형식을 지원하며 최대 크기는 25MiB입니다.
+- Swagger UI: `http://127.0.0.1:9000/docs`
+- Backend health: `http://127.0.0.1:9000/health`
+- Model health: `http://127.0.0.1:9000/api/model/health`
 
-광고 초안은 `1080 × 1350` 크기의 PNG로 생성하고 검증합니다.
+이 저장소의 Compose는 백엔드와 PostgreSQL을 실행합니다. Frontend 및 AI Model을 포함한 전체 실행은 [SnapshotMain](https://github.com/DevTeam-Snapshot/SnapshotMain)의 Compose 구성을 사용합니다.
 
-DB에는 이미지 파일 자체가 아닌 이미지 URL과 파일 정보를 저장합니다.
+## 한계와 개선 방향
 
-완성된 광고 초안은 다음 API를 통해 PNG 파일로 다운로드할 수 있습니다.
+프로젝트 기간에는 핵심 생성 흐름과 서비스 연동을 우선해 아래 항목은 후속 과제로 남겼습니다.
 
-```text
-GET /api/drafts/{draft_id}/download
-```
+- 사용자 인증과 세션 소유권 검증
+- 외부 오브젝트 스토리지 적용
+- 비동기 작업 큐와 재시도 정책 고도화
+- 생성 결과 수정 기능과 목적별 출력 규격 확장
 
-## 8. 구현 완료 상태
+## 배운 점
 
-- 기획 세션 생성·조회 및 최종 저장
-- 이미지 업로드·검증·저장
-- 모델과 대화하며 광고 기획서 작성
-- A·B·C 광고 초안 생성·조회·선택
-- 세션당 성공한 재생성 1회 제한
-- 최초 생성 모델 오류 재시도
-- 시스템 오류와 사용자 재생성 기회 분리
-- 초안 생성 상태 및 오류 관리
-- 기획 대화와 이미지 생성 gRPC 클라이언트 구현
-- 구조화된 gRPC 오류 처리
-- 실제 V2 모델 서버와 gRPC 통합
-- React부터 FastAPI와 모델 서버까지 전체 연동
-- 생성 이미지 저장 및 React 화면 출력
-- 광고 이미지 PNG 다운로드
-- PostgreSQL 및 Docker Compose 실행
+백엔드는 화면과 모델 사이의 데이터를 전달하는 역할만 하는 것이 아니라 서비스의 상태와 규칙을 일관되게 유지해야 한다는 점을 배웠습니다. 입력 구조, 단계 전환, 재시도 정책처럼 사용자는 직접 보지 못하는 규칙이 결과의 정확성과 사용 경험을 결정했습니다.
 
-최종 백엔드 기능 구현을 완료했습니다.
+## 관련 자료
 
-추후 개선 과제:
-
-- 사용자 인증 및 권한 검사
-- 외부 파일 스토리지 적용
-- 모델 요청 큐와 재시도 정책 고도화
+- [팀 통합 저장소](https://github.com/DevTeam-Snapshot/SnapshotMain)
+- [백엔드 API 명세](document/api-spec.html)
+- [백엔드 기여 기록](document/contribution.md)
